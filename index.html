@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Spider-Man Web Swing Battle</title>
+  <style>
+    :root {
+      --bg1: #0a1021;
+      --bg2: #12264c;
+      --panel: rgba(7, 11, 22, 0.55);
+      --line: rgba(255,255,255,0.2);
+      --text: #eef6ff;
+      --red: #ee3b4e;
+      --blue: #49b6ff;
+      --gold: #ffd166;
+      --green: #7ae582;
+      --purple: #9b6dff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top, #173b78, #0a1021 48%, #050a13 100%);
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+
+    .game-wrap {
+      position: relative;
+      width: min(96vw, 1200px);
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: linear-gradient(#07152e, #112946 45%, #060d18 100%);
+      border: 3px solid var(--line);
+      border-radius: 16px;
+      box-shadow: 0 0 30px rgba(73, 182, 255, 0.25);
+    }
+
+    .hud {
+      position: absolute;
+      inset: 14px 18px auto 18px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .title {
+      font-size: clamp(1rem, 1.8vw, 2rem);
+      font-weight: 900;
+      letter-spacing: 2px;
+      text-shadow: 0 0 18px rgba(73, 182, 255, 0.8);
+    }
+
+    .stats, .controls {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 14px;
+      padding: 8px 16px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel);
+      backdrop-filter: blur(4px);
+      font-size: 0.92rem;
+    }
+
+    .controls { margin-top: 2px; }
+    strong { color: var(--gold); }
+  </style>
+</head>
+<body>
+  <div class="game-wrap">
+    <div class="hud">
+      <div class="title">SPIDER-MAN: WEB SWING BATTLE</div>
+      <div class="stats">
+        <span>Health: <strong id="health">100</strong></span>
+        <span>Energy: <strong id="energy">100</strong></span>
+        <span>Score: <strong id="score">0</strong></span>
+      </div>
+      <div class="controls">
+        <span>A / D Move</span>
+        <span>W Swing</span>
+        <span>R Release</span>
+        <span>J Web Shot</span>
+        <span>K Burst</span>
+        <span>L Trap</span>
+      </div>
+    </div>
+    <canvas id="game" width="1200" height="720"></canvas>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    const healthEl = document.getElementById('health');
+    const energyEl = document.getElementById('energy');
+    const scoreEl = document.getElementById('score');
+
+    const keys = {};
+    const anchors = [];
+    const villains = [];
+    const projectiles = [];
+    const particles = [];
+
+    const player = {
+      x: 120,
+      y: 220,
+      vx: 0,
+      vy: 0,
+      radius: 18,
+      health: 100,
+      energy: 100,
+      facing: 1,
+      swingPoint: null,
+      swingRange: 260,
+      cooldown: 0,
+      hitFlash: 0,
+    };
+
+    const state = {
+      time: 0,
+      score: 0,
+      nextSpawn: 0,
+      flash: 0,
+      gameOver: false,
+      message: '',
+    };
+
+    const groundY = canvas.height - 60;
+
+    function clamp(v, min, max) {
+      return Math.max(min, Math.min(max, v));
+    }
+
+    function dist(a, b) {
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    }
+
+    function makeAnchors() {
+      anchors.length = 0;
+      for (let x = 80; x < canvas.width - 80; x += 170) {
+        const y = 110 + ((x / 170) % 2) * 70 + Math.random() * 50;
+        anchors.push({ x, y, radius: 9 });
+      }
+    }
+
+    function spawnParticles(x, y, color, count = 18) {
+      for (let i = 0; i < count; i++) {
+        particles.push({
+          x,
+          y,
+          vx: (Math.random() - 0.5) * 6,
+          vy: (Math.random() - 0.5) * 6,
+          radius: 2 + Math.random() * 4,
+          life: 28 + Math.random() * 20,
+          color,
+        });
+      }
+    }
+
+    function spawnVillain() {
+      const isBoss = Math.random() < 0.12 || state.score > 180;
+      const radius = isBoss ? 22 : 16;
+      const x = 100 + Math.random() * (canvas.width - 200);
+      const y = 100 + Math.random() * 250;
+      villains.push({
+        x,
+        y,
+        radius,
+        vx: (Math.random() * 2 + 1.1) * (Math.random() < 0.5 ? -1 : 1),
+        vy: 0,
+        health: isBoss ? 75 : 25,
+        maxHealth: isBoss ? 75 : 25,
+        color: isBoss ? '#ff6b6b' : '#9b6dff',
+        damage: isBoss ? 16 : 8,
+        trapped: 0,
+        isBoss,
+      });
+    }
+
+    function fireWebShot() {
+      if (player.cooldown > 0) return;
+
+      const target = villains.reduce((best, v) => {
+        const d = dist(player, v);
+        if (!best || d < best.distance) return { villain: v, distance: d };
+        return best;
+      }, null);
+
+      const angle = target
+        ? Math.atan2(target.villain.y - player.y, target.villain.x - player.x)
+        : Math.atan2(0, 1);
+
+      projectiles.push({
+        x: player.x,
+        y: player.y,
+        vx: Math.cos(angle) * 9,
+        vy: Math.sin(angle) * 9,
+        radius: 6,
+        ttl: 100,
+        damage: 18,
+        color: '#7dd3fc',
+      });
+
+      player.cooldown = 0.15;
+    }
+
+    function webBurst() {
+      if (player.energy < 25) return;
+      player.energy -= 25;
+      player.cooldown = 0.6;
+      state.flash = 10;
+
+      for (const v of villains) {
+        if (dist(player, v) < 180) {
+          v.health -= 24;
+          v.vx += (v.x - player.x) * 0.14;
+          v.vy += (v.y - player.y) * 0.14;
+          spawnParticles(v.x, v.y, '#a3e635', 16);
+        }
+      }
+    }
+
+    function webTrap() {
+      if (player.energy < 35) return;
+      player.energy -= 35;
+      player.cooldown = 0.8;
+
+      let best = null;
+      for (const v of villains) {
+        const d = dist(player, v);
+        if (!best || d < best.distance) best = { villain: v, distance: d };
+      }
+
+      if (best) {
+        best.villain.trapped = 90;
+        best.villain.vx *= 0.1;
+        best.villain.vy *= 0.1;
+        spawnParticles(best.villain.x, best.villain.y, '#fbbf24', 30);
+      }
+    }
+
+    function handleInput(key) {
+      if (key === 'w') {
+        if (!player.swingPoint) {
+          let best = null;
+          for (const anchor of anchors) {
+            const d = dist(anchor, player);
+            if (d < 240 && (!best || d < best.d)) best = { anchor, d };
+          }
+          if (best) player.swingPoint = best.anchor;
+        }
+      }
+
+      if (key === 'r') player.swingPoint = null;
+      if (key === 'j') fireWebShot();
+      if (key === 'k') webBurst();
+      if (key === 'l') webTrap();
+    }
+
+    function updatePlayer() {
+      const left = keys.a || keys.arrowleft;
+      const right = keys.d || keys.arrowright;
+      const up = keys.w || keys.arrowup;
+      const down = keys.s || keys.arrowdown;
+
+      if (player.swingPoint) {
+        const dx = player.swingPoint.x - player.x;
+        const dy = player.swingPoint.y - player.y;
+        const d = Math.hypot(dx, dy) || 1;
+
+        player.vx += (dx / d) * 0.45;
+        player.vy += (dy / d) * 0.45;
+
+        if (left) player.vx -= 0.5;
+        if (right) player.vx += 0.5;
+        if (up) player.vy -= 0.55;
+        if (down) player.vy += 0.5;
+
+        if (d > player.swingRange) player.swingPoint = null;
+      } else {
+        if (left) player.vx -= 0.42;
+        if (right) player.vx += 0.42;
+        if (up) player.vy -= 0.42;
+        if (down) player.vy += 0.42;
+        player.vy += 0.28;
+      }
+
+      player.vx *= player.swingPoint ? 0.98 : 0.96;
+      player.vy *= 0.99;
+
+      player.x += player.vx;
+      player.y += player.vy;
+
+      if (player.x < 20) { player.x = 20; player.vx *= -0.3; }
+      if (player.x > canvas.width - 20) { player.x = canvas.width - 20; player.vx *= -0.3; }
+      if (player.y < 30) { player.y = 30; player.vy *= -0.3; }
+      if (player.y > groundY - 10) { player.y = groundY - 10; player.vy *= -0.45; }
+
+      if (player.vx > 0) player.facing = 1;
+      if (player.vx < 0) player.facing = -1;
+
+      player.cooldown = Math.max(0, player.cooldown - 1/60);
+      player.hitFlash = Math.max(0, player.hitFlash - 1/60);
+      player.energy = clamp(player.energy + 0.09, 0, 100);
+    }
+
+    function updateProjectiles() {
+      for (let i = projectiles.length - 1; i >= 0; i--) {
+        const p = projectiles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.ttl -= 1;
+
+        for (const v of villains) {
+          if (dist(p, v) < p.radius + v.radius) {
+            v.health -= p.damage;
+            p.ttl = 0;
+            spawnParticles(p.x, p.y, '#7dd3fc', 12);
+            break;
+          }
+        }
+
+        if (p.ttl <= 0 || p.x < -30 || p.x > canvas.width + 30 || p.y < -30 || p.y > canvas.height + 30) {
+          projectiles.splice(i, 1);
+        }
+      }
+    }
+
+    function updateVillains() {
+      if (state.time > state.nextSpawn) {
+        spawnVillain();
+        state.nextSpawn = state.time + Math.max(1200, 2200 - state.score * 4);
+      }
+
+      for (let i = villains.length - 1; i >= 0; i--) {
+        const v = villains[i];
+
+        if (v.trapped > 0) {
+          v.trapped -= 1;
+          v.vx *= 0.86;
+          v.vy *= 0.86;
+        } else {
+          const dx = player.x - v.x;
+          const dy = player.y - v.y;
+          const d = Math.hypot(dx, dy) || 1;
+          const speed = v.isBoss ? 1.25 : 0.8;
+          v.vx += (dx / d) * speed * 0.05;
+          v.vy += (dy / d) * speed * 0.05;
+          const maxSpeed = v.isBoss ? 2.6 : 1.8;
+          const mag = Math.hypot(v.vx, v.vy) || 1;
+          if (mag > maxSpeed) {
+            v.vx = (v.vx / mag) * maxSpeed;
+            v.vy = (v.vy / mag) * maxSpeed;
+          }
+        }
+
+        v.x += v.vx;
+        v.y += v.vy;
+
+        if (v.x < 20) v.x = 20;
+        if (v.x > canvas.width - 20) v.x = canvas.width - 20;
+        if (v.y < 30) v.y = 30;
+        if (v.y > groundY - 20) v.y = groundY - 20;
+
+        if (dist(player, v) < player.radius + v.radius + 6) {
+          player.health -= v.damage;
+          player.hitFlash = 1;
+          player.vx += (player.x - v.x) * 0.15;
+          player.vy += (player.y - v.y) * 0.15;
+          spawnParticles(player.x, player.y, '#ef4444', 18);
+          if (player.health <= 0) {
+            state.gameOver = true;
+            state.message = 'Spider-Man down! Press R to restart';
+          }
+        }
+
+        if (v.health <= 0) {
+          state.score += v.isBoss ? 80 : 25;
+          spawnParticles(v.x, v.y, v.isBoss ? '#fbbf24' : '#f472b6', 28);
+          villains.splice(i, 1);
+        }
+      }
+    }
+
+    function updateParticles() {
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 1;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+    }
+
+    function update() {
+      if (state.gameOver) return;
+
+      state.time += 16;
+      state.flash = Math.max(0, state.flash - 0.6);
+      updatePlayer();
+      updateProjectiles();
+      updateVillains();
+      updateParticles();
+    }
+
+    function drawBackground() {
+      const sky = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      sky.addColorStop(0, '#0d1d37');
+      sky.addColorStop(0.6, '#173b78');
+      sky.addColorStop(1, '#040d1a');
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = '#0a1424';
+      ctx.fillRect(0, groundY, canvas.width, canvas.height - groundY);
+
+      for (const a of anchors) {
+        ctx.strokeStyle = 'rgba(148, 163, 184, 0.45)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(a.x, a.y, a.radius, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
+    function drawSwing() {
+      if (!player.swingPoint) return;
+      ctx.beginPath();
+      ctx.moveTo(player.x, player.y);
+      ctx.lineTo(player.swingPoint.x, player.swingPoint.y);
+      ctx.strokeStyle = '#dbeafe';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 8]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    function drawPlayer() {
+      ctx.save();
+      ctx.translate(player.x, player.y);
+      ctx.scale(player.facing, 1);
+
+      ctx.fillStyle = player.hitFlash > 0 ? '#fca5a5' : '#e11d48';
+      ctx.beginPath();
+      ctx.arc(0, 0, player.radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(-6, -18, 12, 18);
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillRect(-9, -10, 18, 10);
+
+      if (player.swingPoint) {
+        ctx.strokeStyle = '#facc15';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(-4, 2);
+        ctx.lineTo(24, 18);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    }
+
+    function drawVillains() {
+      for (const v of villains) {
+        ctx.save();
+        ctx.translate(v.x, v.y);
+
+        ctx.fillStyle = v.color;
+        ctx.beginPath();
+        ctx.arc(0, 0, v.radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (v.trapped > 0) {
+          ctx.strokeStyle = '#fef08a';
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(0, 0, v.radius + 8, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(-22, -28, 44, 6);
+        ctx.fillStyle = '#22c55e';
+        ctx.fillRect(-22, -28, 44 * (v.health / v.maxHealth), 6);
+
+        ctx.restore();
+      }
+    }
+
+    function drawProjectiles() {
+      for (const p of projectiles) {
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function drawParticles() {
+      for (const p of particles) {
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = Math.max(0, p.life / 40);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    function drawOverlay() {
+      healthEl.textContent = Math.max(0, Math.round(player.health));
+      energyEl.textContent = Math.max(0, Math.round(player.energy));
+      scoreEl.textContent = Math.round(state.score);
+
+      if (state.flash > 0) {
+        ctx.fillStyle = `rgba(255,255,255,${state.flash / 12})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      if (state.gameOver) {
+        ctx.fillStyle = 'rgba(2, 6, 23, 0.72)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#f8fafc';
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 46px Segoe UI';
+        ctx.fillText('GAME OVER', canvas.width / 2, canvas.height / 2 - 20);
+        ctx.font = '22px Segoe UI';
+        ctx.fillText(state.message, canvas.width / 2, canvas.height / 2 + 20);
+      }
+    }
+
+    function draw() {
+      drawBackground();
+      drawSwing();
+      drawProjectiles();
+      drawVillains();
+      drawPlayer();
+      drawParticles();
+      drawOverlay();
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    window.addEventListener('keydown', (e) => {
+      const k = e.key.toLowerCase();
+      keys[k] = true;
+      if (!e.repeat) handleInput(k);
+      if (k === 'r' && state.gameOver) {
+        player.x = 120;
+        player.y = 220;
+        player.vx = 0;
+        player.vy = 0;
+        player.health = 100;
+        player.energy = 100;
+        player.swingPoint = null;
+        state.score = 0;
+        villains.length = 0;
+        projectiles.length = 0;
+        particles.length = 0;
+        state.gameOver = false;
+        state.message = '';
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      keys[e.key.toLowerCase()] = false;
+    });
+
+    document.addEventListener('mousedown', () => fireWebShot());
+
+    makeAnchors();
+    loop();
+  </script>
+</body>
+</html>
